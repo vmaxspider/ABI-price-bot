@@ -33,6 +33,8 @@ jobs:
         run: |
           git config user.name "abi-bot"
           git config user.email "abi-bot@users.noreply.github.com"
-          git add price_history.json weekly_anchor.json weekly_state.json
+          git add price_history.json
+          [ -f weekly_anchor.json ] && git add weekly_anchor.json || true
+          [ -f weekly_state.json ] && git add weekly_state.json || true
           git diff --quiet --cached || git commit -m "update price history"
           git push
