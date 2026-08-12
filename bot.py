@@ -43,6 +43,16 @@ MINOR_IDS = [
 
 def scrape_all(page):
     """Parcourt toutes les catégories et retourne {item_name: prix_int}."""
+    # Force la langue anglaise (sinon les noms sont en chinois)
+    try:
+        page.goto(
+            "https://abi-tracker.azurewebsites.net/Home/SetLanguage?lang=en&returnUrl=%2FMarket%2FView",
+            wait_until="networkidle",
+            timeout=15000,
+        )
+    except Exception as e:
+        print(f"  [!] Impossible de forcer la langue anglaise: {e}")
+
     results = {}
     for minor_id in MINOR_IDS:
         url = BASE_URL.format(minor_id)
