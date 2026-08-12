@@ -99,28 +99,88 @@ def save_history(history, current):
     HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+TIERS = [100, 75, 50, 25, 15]  # bornes des tranches (%)
+
+# Couleurs ANSI par tranche (plus fort = plus vif)
+# code = (fg_gain, fg_drop) — 92=vert vif, 32=vert normal, 91=rouge vif, 31=rouge normal
+TIER_COLORS = {
+    100: ("1;92", "1;91"),  # bold bright green / red
+    75: ("92", "91"),       # bright green / red
+    50: ("1;32", "1;31"),   # bold green / red
+    25: ("32", "31"),       # green / red
+    15: ("2;32", "2;31"),   # dim green / red
+}
+
+
+def _tier_bound(pct_abs):
+    for t in TIERS:
+        if pct_abs >= t:
+            return t
+    return 15
+
+
+def _ansi(code, text):
+    return f"\u001b[{code}m{text}\u001b[0m"
+
+
 def send_discord_alert(changes):
     if not DISCORD_WEBHOOK:
         print("[!] Pas de webhook Discord configuré, alerte non envoyée.")
         return
 
-    lines = []
-    for key, old, new, pct, window in changes:
-        _, name = key.split("::", 1)
-        arrow = "📈" if pct > 0 else "📉"
-        lines.append(f"{arrow} **{name}** : {old} → {new} ({pct:+.1f}% / {window})")
+    short = [c for c in changes if c[4] == "30min"]
+    long_ = [c for c in changes if c[4] == "2h"]
 
-    # Discord limite les messages à 2000 caractères, on découpe si besoin
+    messages = []  # liste de strings, chacune sera un message Discord séparé
+
+    def build_section(title, items):
+        block_lines = []
+        if not items:
+            return block_lines
+        block_lines.append(f"=== {title} ===")
+        gains = sorted([c for c in items if c[3] > 0], key=lambda c: c[3], reverse=True)
+        drops = sorted([c for c in items if c[3] < 0], key=lambda c: c[3])
+
+        def add_subsection(sub_title, sub_items, is_gain):
+            if not sub_items:
+                return
+            block_lines.append(f"--- {sub_title} ---")
+            name_width = max(len(k.split("::", 1)[1]) for k, *_ in sub_items)
+            current_tier = None
+            for key, old, new, pct, window in sub_items:
+                tier = _tier_bound(abs(pct))
+                if tier != current_tier:
+                    block_lines.append(f"[{tier}%+]")
+                    current_tier = tier
+                _, name = key.split("::", 1)
+                fg_gain, fg_drop = TIER_COLORS[tier]
+                color = fg_gain if is_gain else fg_drop
+                pct_str = f"{pct:+.1f}%"
+                line = f"{name:<{name_width}}  {old:>7} -> {new:<7} {pct_str:>8}"
+                block_lines.append(_ansi(color, line))
+
+        add_subsection("Hausses / Gains", gains, True)
+        add_subsection("Baisses / Drops", drops, False)
+        return block_lines
+
+    all_lines = []
+    all_lines += build_section("VARIATIONS 30 MIN / 30 MIN CHANGES", short)
+    all_lines += build_section("VARIATIONS 2H / 2H CHANGES", long_)
+
+    # Découpe en blocs ```ansi ... ``` de max ~1900 caractères
     chunk = []
-    length = 0
-    for line in lines:
-        if length + len(line) > 1800:
-            _post_discord("\n".join(chunk))
-            chunk, length = [], 0
+    length = 8  # marge pour les balises ```ansi \n ... \n```
+    for line in all_lines:
+        if length + len(line) > 1900:
+            messages.append("```ansi\n" + "\n".join(chunk) + "\n```")
+            chunk, length = [], 8
         chunk.append(line)
-        length += len(line)
+        length += len(line) + 1
     if chunk:
-        _post_discord("\n".join(chunk))
+        messages.append("```ansi\n" + "\n".join(chunk) + "\n```")
+
+    for msg in messages:
+        _post_discord(msg)
 
 
 def _post_discord(content):
