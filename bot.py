@@ -14,6 +14,7 @@ Lancement local :
 import json
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -21,10 +22,14 @@ from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://abi-tracker.azurewebsites.net/Market/View?minorId={}"
 HISTORY_FILE = Path("price_history.json")
+WEEKLY_ANCHOR_FILE = Path("weekly_anchor.json")
+WEEKLY_STATE_FILE = Path("weekly_state.json")
 THRESHOLD_PCT_SHORT = 15  # % de variation vs il y a 30min
 THRESHOLD_PCT_LONG = 25   # % de variation vs il y a 2h (fenêtre complète)
 HISTORY_LENGTH = 4  # nb de snapshots gardés (4 x 30min = 2h de recul)
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
+DISCORD_WEBHOOK_WEEKLY = os.environ.get("DISCORD_WEBHOOK_WEEKLY_URL", "")
+WEEKLY_REPORT_HOUR_UTC = 9  # heure à laquelle envoyer le rapport journalier
 
 MINOR_IDS = [
     "10101", "10102", "10103", "10104", "10105", "10106", "10108", "10201", "104",
@@ -183,11 +188,128 @@ def send_discord_alert(changes):
         _post_discord(msg)
 
 
-def _post_discord(content):
+def _post_discord(content, webhook=None):
+    hook = webhook or DISCORD_WEBHOOK
     try:
-        requests.post(DISCORD_WEBHOOK, json={"content": content}, timeout=10)
+        requests.post(hook, json={"content": content}, timeout=10)
     except Exception as e:
         print(f"[!] Erreur envoi Discord: {e}")
+
+
+def load_weekly_anchor():
+    if WEEKLY_ANCHOR_FILE.exists():
+        return json.loads(WEEKLY_ANCHOR_FILE.read_text(encoding="utf-8"))
+    return None
+
+
+def save_weekly_anchor(monday_date, prices):
+    WEEKLY_ANCHOR_FILE.write_text(
+        json.dumps({"date": monday_date, "prices": prices}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_weekly_state():
+    if WEEKLY_STATE_FILE.exists():
+        return json.loads(WEEKLY_STATE_FILE.read_text(encoding="utf-8"))
+    return {"last_sent_date": None}
+
+
+def save_weekly_state(state):
+    WEEKLY_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def handle_weekly_report(current):
+    if not DISCORD_WEBHOOK_WEEKLY:
+        return  # pas configuré, on ignore silencieusement
+
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
+    monday_str = (now.date().isoformat()
+                  if now.weekday() == 0
+                  else None)
+
+    anchor = load_weekly_anchor()
+
+    # Chaque lundi (première exécution du jour), on repart d'une nouvelle référence
+    if now.weekday() == 0 and (anchor is None or anchor["date"] != today_str):
+        save_weekly_anchor(today_str, current)
+        anchor = {"date": today_str, "prices": current}
+        # Pas d'alerte le jour même de la remise à zéro : rien à comparer
+
+    if anchor is None:
+        # Pas encore de référence (premier lancement avant le premier lundi)
+        return
+
+    state = load_weekly_state()
+    if state.get("last_sent_date") == today_str:
+        return  # déjà envoyé aujourd'hui
+    if now.hour < WEEKLY_REPORT_HOUR_UTC:
+        return  # trop tôt dans la journée
+
+    if anchor["date"] == today_str:
+        # C'est lundi et on vient tout juste de poser la référence : rien à comparer
+        state["last_sent_date"] = today_str
+        save_weekly_state(state)
+        return
+
+    changes = []
+    for key, new_price in current.items():
+        old_price = anchor["prices"].get(key)
+        if old_price is None or old_price == 0:
+            continue
+        pct = (new_price - old_price) / old_price * 100
+        changes.append((key, old_price, new_price, pct))
+
+    send_weekly_report(anchor["date"], today_str, changes)
+    state["last_sent_date"] = today_str
+    save_weekly_state(state)
+
+
+def send_weekly_report(monday_date, today_date, changes):
+    gains = sorted([c for c in changes if c[3] > 0], key=lambda c: c[3], reverse=True)
+    drops = sorted([c for c in changes if c[3] < 0], key=lambda c: c[3])
+
+    lines = [f"───────── {today_date} (réf. lundi {monday_date}) / ref. Monday {monday_date} ─────────"]
+
+    def add_subsection(sub_title, sub_items, is_gain):
+        if not sub_items:
+            return
+        lines.append(f"--- {sub_title} ---")
+        name_width = max(len(k.split("::", 1)[1]) for k, *_ in sub_items)
+        current_tier = None
+        for key, old, new, pct in sub_items:
+            tier = _tier_bound(abs(pct))
+            if tier != current_tier:
+                lines.append(f"[{tier}%+]")
+                current_tier = tier
+            _, name = key.split("::", 1)
+            fg_gain, fg_drop = TIER_COLORS[tier]
+            color = fg_gain if is_gain else fg_drop
+            pct_str = f"{pct:+.1f}%"
+            line = f"{name:<{name_width}}  {old:>7} -> {new:<7} {pct_str:>8}"
+            lines.append(_ansi(color, line))
+
+    add_subsection("Hausses / Gains", gains, True)
+    add_subsection("Baisses / Drops", drops, False)
+
+    if len(lines) == 1:
+        lines.append("(aucune variation notable / no notable change)")
+
+    chunk = []
+    length = 8
+    messages = []
+    for line in lines:
+        if length + len(line) > 1900:
+            messages.append("```ansi\n" + "\n".join(chunk) + "\n```")
+            chunk, length = [], 8
+        chunk.append(line)
+        length += len(line) + 1
+    if chunk:
+        messages.append("```ansi\n" + "\n".join(chunk) + "\n```")
+
+    for msg in messages:
+        _post_discord(msg, webhook=DISCORD_WEBHOOK_WEEKLY)
 
 
 def main():
@@ -235,6 +357,7 @@ def main():
         print("Aucune variation significative.")
 
     save_history(history, current)
+    handle_weekly_report(current)
 
 
 if __name__ == "__main__":
