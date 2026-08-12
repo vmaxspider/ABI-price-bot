@@ -20,8 +20,10 @@ import requests
 from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://abi-tracker.azurewebsites.net/Market/View?minorId={}"
-DATA_FILE = Path("prices.json")
-THRESHOLD_PCT = 15  # % de variation qui déclenche une alerte
+HISTORY_FILE = Path("price_history.json")
+THRESHOLD_PCT_SHORT = 15  # % de variation vs il y a 30min
+THRESHOLD_PCT_LONG = 25   # % de variation vs il y a 2h (fenêtre complète)
+HISTORY_LENGTH = 4  # nb de snapshots gardés (4 x 30min = 2h de recul)
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
 MINOR_IDS = [
@@ -72,14 +74,19 @@ def scrape_all(page):
     return results
 
 
-def load_previous():
-    if DATA_FILE.exists():
-        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    return {}
+def load_history():
+    """Retourne la liste des anciens snapshots [{'prices': {...}}, ...],
+    du plus ancien au plus récent."""
+    if HISTORY_FILE.exists():
+        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    return []
 
 
-def save_current(data):
-    DATA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+def save_history(history, current):
+    history.append({"prices": current})
+    # ne garde que les HISTORY_LENGTH derniers snapshots
+    history = history[-HISTORY_LENGTH:]
+    HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def send_discord_alert(changes):
@@ -88,10 +95,10 @@ def send_discord_alert(changes):
         return
 
     lines = []
-    for key, old, new, pct in changes:
+    for key, old, new, pct, window in changes:
         _, name = key.split("::", 1)
         arrow = "📈" if pct > 0 else "📉"
-        lines.append(f"{arrow} **{name}** : {old} → {new} ({pct:+.1f}%)")
+        lines.append(f"{arrow} **{name}** : {old} → {new} ({pct:+.1f}% / {window})")
 
     # Discord limite les messages à 2000 caractères, on découpe si besoin
     chunk = []
@@ -122,16 +129,34 @@ def main():
         browser.close()
 
     print(f"{len(current)} items récupérés.")
-    previous = load_previous()
+    history = load_history()
 
     changes = []
-    for key, new_price in current.items():
-        old_price = previous.get(key)
-        if old_price is None or old_price == 0:
-            continue
-        pct = (new_price - old_price) / old_price * 100
-        if abs(pct) >= THRESHOLD_PCT:
-            changes.append((key, old_price, new_price, pct))
+    seen = set()  # évite de doubler un item alerté par les 2 paliers
+
+    if history:
+        # Palier COURT : vs le snapshot précédent (30 min)
+        prev_short = history[-1]["prices"]
+        for key, new_price in current.items():
+            old_price = prev_short.get(key)
+            if old_price is None or old_price == 0:
+                continue
+            pct = (new_price - old_price) / old_price * 100
+            if abs(pct) >= THRESHOLD_PCT_SHORT:
+                changes.append((key, old_price, new_price, pct, "30min"))
+                seen.add(key)
+
+        # Palier LONG : vs le snapshot le plus ancien (jusqu'à 2h)
+        oldest = history[0]["prices"]
+        for key, new_price in current.items():
+            if key in seen:
+                continue  # déjà signalé par le palier court
+            old_price = oldest.get(key)
+            if old_price is None or old_price == 0:
+                continue
+            pct = (new_price - old_price) / old_price * 100
+            if abs(pct) >= THRESHOLD_PCT_LONG:
+                changes.append((key, old_price, new_price, pct, "2h"))
 
     if changes:
         print(f"{len(changes)} variation(s) détectée(s), envoi alerte Discord.")
@@ -139,7 +164,7 @@ def main():
     else:
         print("Aucune variation significative.")
 
-    save_current(current)
+    save_history(history, current)
 
 
 if __name__ == "__main__":
