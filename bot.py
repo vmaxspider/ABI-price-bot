@@ -75,7 +75,10 @@ def scrape_all(page):
             if not name_el or not price_el:
                 continue
             name = name_el.inner_text().strip()
-            price_text = price_el.inner_text().strip().replace(",", "").replace(" ", "")
+            price_text = price_el.inner_text().strip()
+            # Supprime tous types d'espaces (normal, insécable \xa0, fine insécable \u202f, etc.)
+            price_text = "".join(ch for ch in price_text if not ch.isspace())
+            price_text = price_text.replace(",", "")
             if price_text in ("--", "", "暫無價格資料"):
                 continue
             try:
