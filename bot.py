@@ -53,19 +53,26 @@ def scrape_all(page):
         page.goto(
             "https://abi-tracker.azurewebsites.net/Home/SetLanguage?lang=en&returnUrl=%2FMarket%2FView",
             wait_until="networkidle",
-            timeout=15000,
+            timeout=30000,
         )
+        page.wait_for_timeout(1000)
     except Exception as e:
         print(f"  [!] Impossible de forcer la langue anglaise: {e}")
 
     results = {}
+    first_failure_logged = False
     for minor_id in MINOR_IDS:
         url = BASE_URL.format(minor_id)
         try:
-            page.goto(url, wait_until="networkidle", timeout=20000)
-            page.wait_for_selector(".market-item-card", timeout=8000)
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.wait_for_selector(".market-item-card", timeout=15000)
         except Exception as e:
             print(f"  [!] {minor_id}: skip ({e})")
+            if not first_failure_logged:
+                first_failure_logged = True
+                print(f"  [debug] URL actuelle: {page.url}")
+                print(f"  [debug] Titre page: {page.title()}")
+                print(f"  [debug] 500 premiers caractères du body: {page.content()[:500]}")
             continue
 
         cards = page.query_selector_all(".market-item-card")
