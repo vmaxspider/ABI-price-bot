@@ -37,4 +37,5 @@ jobs:
           [ -f weekly_anchor.json ] && git add weekly_anchor.json || true
           [ -f weekly_state.json ] && git add weekly_state.json || true
           git diff --quiet --cached || git commit -m "update price history"
+          git pull --rebase origin main
           git push
