@@ -66,7 +66,8 @@ def scrape_all(page):
         cards = []
         for attempt in range(2):  # jusqu'à 2 essais par catégorie
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                status = response.status if response else "N/A"
                 page.wait_for_timeout(1500)  # laisse le JS afficher les prix
                 page.wait_for_selector(".market-item-card", timeout=15000)
                 cards = page.query_selector_all(".market-item-card")
@@ -76,6 +77,7 @@ def scrape_all(page):
                     print(f"  [!] {minor_id}: skip ({e})")
                     if not first_failure_logged:
                         first_failure_logged = True
+                        print(f"  [debug] Statut HTTP: {status}")
                         print(f"  [debug] URL actuelle: {page.url}")
                         print(f"  [debug] Titre page: {page.title()}")
                         print(f"  [debug] 500 premiers caractères du body: {page.content()[:500]}")
@@ -331,7 +333,14 @@ def main():
     print("Scraping en cours...")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        page = browser.new_page(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1366, "height": 900},
+            locale="en-US",
+        )
         current = scrape_all(page)
         browser.close()
 
