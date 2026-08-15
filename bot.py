@@ -52,10 +52,10 @@ def scrape_all(page):
     try:
         page.goto(
             "https://abi-tracker.azurewebsites.net/Home/SetLanguage?lang=en&returnUrl=%2FMarket%2FView",
-            wait_until="networkidle",
+            wait_until="domcontentloaded",
             timeout=30000,
         )
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(2000)
     except Exception as e:
         print(f"  [!] Impossible de forcer la langue anglaise: {e}")
 
@@ -63,17 +63,22 @@ def scrape_all(page):
     first_failure_logged = False
     for minor_id in MINOR_IDS:
         url = BASE_URL.format(minor_id)
-        try:
-            page.goto(url, wait_until="networkidle", timeout=30000)
-            page.wait_for_selector(".market-item-card", timeout=15000)
-        except Exception as e:
-            print(f"  [!] {minor_id}: skip ({e})")
-            if not first_failure_logged:
-                first_failure_logged = True
-                print(f"  [debug] URL actuelle: {page.url}")
-                print(f"  [debug] Titre page: {page.title()}")
-                print(f"  [debug] 500 premiers caractères du body: {page.content()[:500]}")
-            continue
+        cards = []
+        for attempt in range(2):  # jusqu'à 2 essais par catégorie
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(1500)  # laisse le JS afficher les prix
+                page.wait_for_selector(".market-item-card", timeout=15000)
+                cards = page.query_selector_all(".market-item-card")
+                break
+            except Exception as e:
+                if attempt == 1:
+                    print(f"  [!] {minor_id}: skip ({e})")
+                    if not first_failure_logged:
+                        first_failure_logged = True
+                        print(f"  [debug] URL actuelle: {page.url}")
+                        print(f"  [debug] Titre page: {page.title()}")
+                        print(f"  [debug] 500 premiers caractères du body: {page.content()[:500]}")
 
         cards = page.query_selector_all(".market-item-card")
         for card in cards:
