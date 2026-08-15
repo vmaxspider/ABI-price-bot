@@ -45,6 +45,36 @@ MINOR_IDS = [
     "40810", "40812", "40813", "40814", "40815",
 ]
 
+CATEGORY_NAMES = {
+    "30104": "Helmet", "30105": "Mask", "30106": "Body Armor",
+    "3010101": "Unarmored Chest Rigs", "3010102": "Armored Rig",
+    "30102": "Backpack", "30103": "Headset", "3011502": "Gas Mask",
+    "20103": "Sights", "20105": "Magazine", "20101": "Front Grips",
+    "20102": "Rear Grips", "20104": "Stock", "20107": "Muzzle",
+    "20116": "Laser Sight", "20111": "Barrel", "20108": "Handguard",
+    "20110": "Receiver/Dust Cvr", "20106": "Rail", "20114": "Gas Block",
+    "20115": "Gun Bolt", "20112": "Flashlight",
+    "10101": "Assault Rifles", "10102": "Submachine Guns", "10106": "Shotguns",
+    "10105": "Light Machine Guns", "10104": "Bolt-Action Rifles",
+    "10103": "Marksman Rifles", "10108": "Carbines", "10201": "Pistol",
+    "20210": "5.45x39mm Ammo", "20203": "5.56x45mm Ammo", "20208": "5.7x28mm Ammo",
+    "20217": "5.8x42mm Ammo", "20214": "7.62x25mm Ammo", "20201": "7.62x39mm Ammo",
+    "20206": "7.62x51mm Ammo", "20202": "7.62x54mm Ammo", "20204": "9x19mm Ammo",
+    "20209": "9x39mm Ammo", "20205": "12x70mm Ammo", "20212": ".44 Caliber Ammo",
+    "20213": ".45 Caliber Ammo", "20215": ".338 Caliber Ammo",
+    "40101": "Medicine", "40103": "Treatments", "40104": "Medkits",
+    "40105": "Stimulants", "104": "Throwables",
+    "40501": "Farm Keys", "40502": "Northridge Keys", "40503": "Valley Keys",
+    "40504": "Armory Keys", "40505": "TV Station Keys", "40506": "Port Keys",
+    "40507": "Airport Key", "40815": "Keycards",
+    "40801": "Flammables", "40802": "Building Materials", "40803": "Computer Parts",
+    "40804": "Energy Items", "40805": "Tools", "40806": "Household Items",
+    "40807": "Miscellaneous Medical Item", "40808": "Collectibles", "40809": "Paper",
+    "40810": "Instruments", "40812": "Miscellaneous Military Item",
+    "40813": "Boss Token", "40814": "Electronics",
+    "40401": "Beverages", "40402": "Food",
+}
+
 
 def scrape_all(page):
     """Parcourt toutes les catégories et retourne {item_name: prix_int}."""
@@ -60,6 +90,7 @@ def scrape_all(page):
         print(f"  [!] Impossible de forcer la langue anglaise: {e}")
 
     results = {}
+    skipped = []
     first_failure_logged = False
     for minor_id in MINOR_IDS:
         url = BASE_URL.format(minor_id)
@@ -75,6 +106,7 @@ def scrape_all(page):
             except Exception as e:
                 if attempt == 1:
                     print(f"  [!] {minor_id}: skip ({e})")
+                    skipped.append(minor_id)
                     if not first_failure_logged:
                         first_failure_logged = True
                         print(f"  [debug] Statut HTTP: {status}")
@@ -103,7 +135,7 @@ def scrape_all(page):
             results[f"{minor_id}::{name}"] = price
 
         time.sleep(0.3)  # petite pause polie entre les requêtes
-    return results
+    return results, skipped
 
 
 def load_history():
@@ -145,10 +177,14 @@ def _ansi(code, text):
     return f"\u001b[{code}m{text}\u001b[0m"
 
 
-def send_discord_alert(changes):
+def send_discord_alert(changes, skipped=None):
     if not DISCORD_WEBHOOK:
         print("[!] Pas de webhook Discord configuré, alerte non envoyée.")
         return
+
+    if skipped:
+        names = [CATEGORY_NAMES.get(mid, mid) for mid in skipped]
+        _post_discord(f"⚠️ *Sections skipped: {', '.join(names)}*")
 
     short = [c for c in changes if c[4] == "30min"]
     long_ = [c for c in changes if c[4] == "2h"]
@@ -341,10 +377,13 @@ def main():
             viewport={"width": 1366, "height": 900},
             locale="en-US",
         )
-        current = scrape_all(page)
+        current, skipped = scrape_all(page)
         browser.close()
 
     print(f"{len(current)} items récupérés.")
+    if skipped:
+        names = [CATEGORY_NAMES.get(mid, mid) for mid in skipped]
+        print(f"Catégories skippées: {', '.join(names)}")
     history = load_history()
 
     changes = []
@@ -376,7 +415,12 @@ def main():
 
     if changes:
         print(f"{len(changes)} variation(s) détectée(s), envoi alerte Discord.")
-        send_discord_alert(changes)
+        send_discord_alert(changes, skipped)
+    elif skipped:
+        # Même sans variation, on prévient si des catégories ont été ratées
+        names = [CATEGORY_NAMES.get(mid, mid) for mid in skipped]
+        _post_discord(f"⚠️ *Sections skipped: {', '.join(names)}*")
+        print("Aucune variation significative (mais des catégories ont été skippées).")
     else:
         print("Aucune variation significative.")
 
