@@ -114,7 +114,6 @@ def scrape_all(page):
                         print(f"  [debug] Titre page: {page.title()}")
                         print(f"  [debug] 500 premiers caractères du body: {page.content()[:500]}")
 
-        cards = page.query_selector_all(".market-item-card")
         for card in cards:
             name_el = card.query_selector(".market-item-name")
             price_el = card.query_selector(".market-item-lowest-value")
